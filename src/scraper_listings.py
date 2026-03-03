@@ -125,8 +125,8 @@ async def _extract_listings_from_page(page: Page, cat: dict) -> list[dict]:
             # Extract the item title (usually the longest meaningful line)
             title = _extract_title(lines)
 
-            # Extract price (look for $ pattern)
-            price = _extract_price(lines)
+            # Extract price (handles USD $ and CAD formats)
+            price, currency = _extract_price(lines)
 
             # Extract seller name (line after verified icon text or near it)
             seller = _extract_seller(lines)
@@ -149,7 +149,7 @@ async def _extract_listings_from_page(page: Page, cat: dict) -> list[dict]:
                 "title": title,
                 "image_urls": image_urls,
                 "price": price,
-                "currency": "USD",
+                "currency": currency,
                 "seller_name": seller,
                 "location": location,
                 "primary_category": cat.get("parent_category", ""),
@@ -177,13 +177,19 @@ def _extract_title(lines: list[str]) -> str:
 
 
 PRICE_RE = re.compile(r"\$[\d,]+(?:\.\d{2})?")
+PRICE_CAD_RE = re.compile(r"CAD\s*[\d,]+(?:\.\d{2})?")
 
-def _extract_price(lines: list[str]) -> str:
+
+def _extract_price(lines: list[str]) -> tuple[str, str]:
+    """Return (price_string, currency). Handles both USD ($) and CAD formats."""
     for line in lines:
         m = PRICE_RE.search(line)
         if m:
-            return m.group()
-    return ""
+            return m.group(), "USD"
+        m = PRICE_CAD_RE.search(line)
+        if m:
+            return m.group(), "CAD"
+    return "", "USD"
 
 
 def _extract_seller(lines: list[str]) -> str:
