@@ -27,15 +27,18 @@ def setup_logging():
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Aucto.com Buy Now scraper")
+    parser = argparse.ArgumentParser(description="Aucto.com scraper — Buy Now & Auctions")
     parser.add_argument("--all", action="store_true", help="Run full pipeline")
     parser.add_argument("--categories", action="store_true", help="Phase 1: discover categories")
-    parser.add_argument("--listings", action="store_true", help="Phase 2: scrape listings")
+    parser.add_argument("--listings", action="store_true", help="Phase 2: scrape buy-now listings")
+    parser.add_argument("--auctions", action="store_true", help="Phase 2b: scrape auction listings")
     parser.add_argument("--details", action="store_true", help="Phase 3: scrape detail pages")
     parser.add_argument("--export", action="store_true", help="Export to Excel")
     parser.add_argument("--headless", action="store_true", default=None, help="Force headless mode")
     parser.add_argument("--no-headless", action="store_true", help="Force visible browser")
     parser.add_argument("--concurrency", type=int, help="Override concurrency level")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="Stop after N listings (for testing)")
     return parser.parse_args()
 
 
@@ -50,7 +53,8 @@ async def run_pipeline(args):
     if args.concurrency:
         config.CONCURRENCY = args.concurrency
 
-    run_all = args.all or not any([args.categories, args.listings, args.details, args.export])
+    run_all = args.all or not any([args.categories, args.listings, args.auctions,
+                                   args.details, args.export])
 
     if run_all or args.categories:
         logger.info("=== Phase 1: Category Discovery ===")
@@ -58,9 +62,14 @@ async def run_pipeline(args):
         logger.info("Found %d categories", count)
 
     if run_all or args.listings:
-        logger.info("=== Phase 2: Listing Scraping ===")
-        count = await scrape_all_listings()
-        logger.info("Scraped %d new listings", count)
+        logger.info("=== Phase 2: Buy-Now Listing Scraping ===")
+        count = await scrape_all_listings(sale_format="buy-now", limit=args.limit)
+        logger.info("Scraped %d new buy-now listings", count)
+
+    if run_all or args.auctions:
+        logger.info("=== Phase 2b: Auction Listing Scraping ===")
+        count = await scrape_all_listings(sale_format="auction", limit=args.limit)
+        logger.info("Scraped %d new auction listings", count)
 
     if run_all or args.details:
         logger.info("=== Phase 3: Detail Scraping ===")

@@ -9,7 +9,7 @@ from playwright.async_api import Page
 from . import config
 from .browser import create_browser, new_context, safe_goto, random_delay
 from .db import (ensure_db, get_unscraped_listings, mark_listing_scraped,
-                 upsert_item_details)
+                 upsert_item_details, get_conn)
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,9 @@ async def scrape_all_details() -> int:
                 ctx = await new_context(browser, block_resources=False)
                 try:
                     page = await ctx.new_page()
-                    ok = await _scrape_detail_page(page, listing["item_url"])
+                    ok = await _scrape_detail_page(
+                        page, listing["item_url"], listing.get("listing_type", "buy-now")
+                    )
                     if ok:
                         mark_listing_scraped(listing["item_url"])
                     return ok
@@ -57,7 +59,7 @@ async def scrape_all_details() -> int:
         await pw.stop()
 
 
-async def _scrape_detail_page(page: Page, url: str) -> bool:
+async def _scrape_detail_page(page: Page, url: str, listing_type: str = "buy-now") -> bool:
     """Visit a single detail page and extract core specs + images."""
     await random_delay()
     if not await safe_goto(page, url, wait_until="domcontentloaded"):
@@ -76,6 +78,23 @@ async def _scrape_detail_page(page: Page, url: str) -> bool:
     all_images = await _extract_detail_images(page)
 
     upsert_item_details(url, core_specs, all_images)
+
+    # For auction items update current_bid + bid_history from the detail page
+    if listing_type == "auction":
+        current_bid, bid_count, is_ended = await _extract_auction_bid_info(page)
+        if is_ended:
+            bid_history = '{"status": "ended"}'
+            current_bid = current_bid or ""
+        elif bid_count is not None:
+            bid_history = f'{{"bid_count": {bid_count}}}'
+        else:
+            bid_history = None
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE listings SET current_bid=?, bid_history=? WHERE item_url=?",
+                (current_bid, bid_history, url),
+            )
+
     logger.info("  Scraped detail: %s (%d specs, %d images)", url, len(core_specs), len(all_images))
     return True
 
@@ -131,6 +150,51 @@ async def _extract_core_specs(page: Page) -> dict:
         logger.debug("Error extracting core specs: %s", e)
 
     return specs or {}
+
+
+async def _extract_auction_bid_info(page: Page) -> tuple[str, int | None]:
+    """Extract current bid amount and bid count from an auction detail page."""
+    try:
+        result = await page.evaluate("""() => {
+            let current_bid = '';
+            let bid_count = null;
+            let is_ended = false;
+
+            // Check if auction has ended or page is missing
+            const bodyText = document.body.innerText;
+            if (bodyText.includes('HAS ENDED') || bodyText.includes('Has Ended')
+                    || bodyText.includes('Page Not Found')) {
+                is_ended = true;
+            }
+
+            if (!is_ended) {
+                // Detect bid label: 'Starting Bid' means 0 bids, 'Current Bid' means bids exist
+                let has_starting_bid = false;
+                for (const span of document.querySelectorAll('span')) {
+                    const t = span.textContent.trim();
+                    if (t === 'Starting Bid:') { has_starting_bid = true; }
+                    if (/^(\\$[\\d,]+(\\.[\\d]{2})?|CAD\\s*[\\d,]+(\\.[\\d]{2})?)$/.test(t)) {
+                        current_bid = t; break;
+                    }
+                }
+                // If starting bid label, no bids placed yet
+                if (has_starting_bid) {
+                    bid_count = 0;
+                } else {
+                    // Look for 'X bids' in <p> tags (only present when bids > 0)
+                    for (const p of document.querySelectorAll('p')) {
+                        const m = p.textContent.trim().match(/^(\\d+)\\s*bids?$/i);
+                        if (m) { bid_count = parseInt(m[1]); break; }
+                    }
+                }
+            }
+
+            return { current_bid, bid_count, is_ended };
+        }""")
+        return result.get("current_bid", ""), result.get("bid_count"), result.get("is_ended", False)
+    except Exception as e:
+        logger.debug("Error extracting auction bid info: %s", e)
+        return "", None, False
 
 
 async def _extract_detail_images(page: Page) -> list[str]:

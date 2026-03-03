@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS categories (
     subcategory TEXT,
     is_leaf BOOLEAN DEFAULT 0,
     scraped_listings BOOLEAN DEFAULT 0,
+    scraped_auctions BOOLEAN DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS listings (
@@ -25,6 +26,9 @@ CREATE TABLE IF NOT EXISTS listings (
     image_urls TEXT,
     price TEXT,
     currency TEXT DEFAULT 'USD',
+    listing_type TEXT DEFAULT 'buy-now',
+    current_bid TEXT,
+    bid_history TEXT,
     seller_name TEXT,
     location TEXT,
     primary_category TEXT,
@@ -42,11 +46,24 @@ CREATE TABLE IF NOT EXISTS item_details (
 );
 """
 
+# Columns added after initial release — applied via ALTER TABLE on existing DBs
+_MIGRATIONS = [
+    ("categories", "scraped_auctions", "BOOLEAN DEFAULT 0"),
+    ("listings",   "listing_type",     "TEXT DEFAULT 'buy-now'"),
+    ("listings",   "current_bid",      "TEXT"),
+    ("listings",   "bid_history",      "TEXT"),
+]
+
 
 def ensure_db() -> None:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(_SCHEMA)
+        # Apply any missing columns to existing tables
+        for table, col, col_def in _MIGRATIONS:
+            existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
 
 
 @contextmanager
@@ -78,10 +95,11 @@ def upsert_category(url: str, name: str, parent_category: str | None = None,
         )
 
 
-def get_unscraped_categories() -> list[dict]:
+def get_unscraped_categories(sale_format: str = "buy-now") -> list[dict]:
+    col = "scraped_auctions" if sale_format == "auction" else "scraped_listings"
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM categories WHERE scraped_listings = 0 AND is_leaf = 1"
+            f"SELECT * FROM categories WHERE {col} = 0 AND is_leaf = 1"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -92,9 +110,10 @@ def get_all_categories() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def mark_category_scraped(url: str) -> None:
+def mark_category_scraped(url: str, sale_format: str = "buy-now") -> None:
+    col = "scraped_auctions" if sale_format == "auction" else "scraped_listings"
     with get_conn() as conn:
-        conn.execute("UPDATE categories SET scraped_listings = 1 WHERE url = ?", (url,))
+        conn.execute(f"UPDATE categories SET {col} = 1 WHERE url = ?", (url,))
 
 
 def upsert_listing(data: dict[str, Any]) -> None:
@@ -104,16 +123,21 @@ def upsert_listing(data: dict[str, Any]) -> None:
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO listings (item_url, title, image_urls, price, currency,
+                                     listing_type, current_bid, bid_history,
                                      seller_name, location, primary_category, subcategory, category_url)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(item_url) DO UPDATE SET
                  title=excluded.title, image_urls=excluded.image_urls,
                  price=excluded.price, currency=excluded.currency,
+                 listing_type=excluded.listing_type, current_bid=excluded.current_bid,
+                 bid_history=excluded.bid_history,
                  seller_name=excluded.seller_name, location=excluded.location,
                  primary_category=excluded.primary_category,
                  subcategory=excluded.subcategory, category_url=excluded.category_url""",
             (data["item_url"], data.get("title"), image_urls,
              data.get("price"), data.get("currency", "USD"),
+             data.get("listing_type", "buy-now"), data.get("current_bid"),
+             data.get("bid_history"),
              data.get("seller_name"), data.get("location"),
              data.get("primary_category"), data.get("subcategory"),
              data.get("category_url")),
@@ -128,16 +152,21 @@ def upsert_listings_batch(items: list[dict[str, Any]]) -> None:
                 image_urls = json.dumps(image_urls)
             conn.execute(
                 """INSERT INTO listings (item_url, title, image_urls, price, currency,
+                                         listing_type, current_bid, bid_history,
                                          seller_name, location, primary_category, subcategory, category_url)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(item_url) DO UPDATE SET
                      title=excluded.title, image_urls=excluded.image_urls,
                      price=excluded.price, currency=excluded.currency,
+                     listing_type=excluded.listing_type, current_bid=excluded.current_bid,
+                     bid_history=excluded.bid_history,
                      seller_name=excluded.seller_name, location=excluded.location,
                      primary_category=excluded.primary_category,
                      subcategory=excluded.subcategory, category_url=excluded.category_url""",
                 (data["item_url"], data.get("title"), image_urls,
                  data.get("price"), data.get("currency", "USD"),
+                 data.get("listing_type", "buy-now"), data.get("current_bid"),
+                 data.get("bid_history"),
                  data.get("seller_name"), data.get("location"),
                  data.get("primary_category"), data.get("subcategory"),
                  data.get("category_url")),
@@ -176,10 +205,11 @@ def get_full_export_data() -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute("""
             SELECT l.title, l.item_url, l.image_urls, l.price, l.currency,
+                   l.listing_type, l.current_bid, l.bid_history,
                    l.seller_name, l.location, l.primary_category, l.subcategory,
                    d.core_specifications, d.all_image_urls
             FROM listings l
             LEFT JOIN item_details d ON l.item_url = d.listing_url
-            ORDER BY l.primary_category, l.subcategory, l.title
+            ORDER BY l.listing_type, l.primary_category, l.subcategory, l.title
         """).fetchall()
     return [dict(r) for r in rows]

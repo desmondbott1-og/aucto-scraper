@@ -14,8 +14,11 @@ logger = logging.getLogger(__name__)
 HEADERS = [
     "Title",
     "URL",
+    "Listing Type",
     "Price",
     "Currency",
+    "Current Bid",
+    "Bid History",
     "Seller Name",
     "Location",
     "Primary Category",
@@ -83,11 +86,27 @@ def export_to_excel(output_path: str | None = None) -> str:
         # Format core specs as readable text
         specs_text = "\n".join(f"{k}: {v}" for k, v in core_specs.items()) if core_specs else ""
 
+        bid_history_raw = item.get("bid_history") or ""
+        try:
+            import json as _json
+            bh = _json.loads(bid_history_raw) if bid_history_raw else {}
+            if bh.get("status") == "ended":
+                bid_history_text = "Ended"
+            elif "bid_count" in bh:
+                bid_history_text = f"Bid count: {bh['bid_count']}"
+            else:
+                bid_history_text = ""
+        except Exception:
+            bid_history_text = bid_history_raw
+
         values = [
             item.get("title", ""),
             item.get("item_url", ""),
+            item.get("listing_type", "buy-now"),
             item.get("price", ""),
             item.get("currency", "USD"),
+            item.get("current_bid", ""),
+            bid_history_text,
             item.get("seller_name", ""),
             item.get("location", ""),
             item.get("primary_category", ""),
@@ -103,7 +122,7 @@ def export_to_excel(output_path: str | None = None) -> str:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
 
     # Auto-adjust column widths (approximate)
-    col_widths = [40, 60, 12, 8, 30, 40, 25, 30, 50, 50, 50]
+    col_widths = [40, 60, 12, 12, 8, 14, 16, 30, 40, 25, 30, 50, 50, 50]
     for i, w in enumerate(col_widths, 1):
         ws.column_dimensions[chr(64 + i) if i <= 26 else "A" + chr(64 + i - 26)].width = w
 

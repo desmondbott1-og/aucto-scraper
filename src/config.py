@@ -12,6 +12,7 @@ LOG_PATH = DATA_DIR / "scraper.log"
 BASE_URL = "https://www.aucto.com"
 MARKETPLACE_URL = f"{BASE_URL}/marketplace/lots"
 BUY_NOW_FILTER = "sale-format=buy-now"
+AUCTION_FILTER = "sale-format=auction"
 
 HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 USER_AGENT = (
